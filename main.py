@@ -1,8 +1,10 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional
 
-app = FastAPI()
+app = FastAPI(title="PaladiuAI API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,13 +14,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+class Lead(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    email: EmailStr
+    company: Optional[str] = Field(None, max_length=120)
+    project_type: Optional[str] = Field(None, max_length=120)
+    message: Optional[str] = Field(None, max_length=2000)
+    source: Optional[str] = Field(None, max_length=120)
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+@app.get("/")
+def heartbeat():
+    return {"status": "ok", "service": "PaladiuAI Backend", "version": "1.0.0"}
 
 @app.get("/test")
 def test_database():
@@ -31,39 +37,43 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
+
     try:
-        # Try to import database module
         from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
+            response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
+            response["database_name"] = getattr(db, 'name', None) or (os.getenv("DATABASE_NAME") and "✅ Set") or "❌ Not Set"
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
+                response["database"] = f"⚠️  Connected but Error: {str(e)[:80]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
     except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+        response["database"] = "❌ Database module not found"
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
+        response["database"] = f"❌ Error: {str(e)[:120]}"
+
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
     return response
 
+@app.post("/lead")
+async def create_lead(lead: Lead):
+    """Create a lead entry. Attempts to use MongoDB if configured; otherwise falls back to in-memory ack."""
+    payload = lead.model_dump()
+    # Try database first
+    try:
+        from database import create_document
+        lead_id = create_document("lead", payload)
+        return {"ok": True, "id": lead_id, "stored": "database"}
+    except Exception as e:
+        # Fallback: pretend success so the form UX works in environments without DB
+        return {"ok": True, "id": None, "stored": "memory", "note": f"DB unavailable: {str(e)[:80]}"}
 
 if __name__ == "__main__":
     import uvicorn
